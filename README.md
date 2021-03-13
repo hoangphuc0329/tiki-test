@@ -1,1 +1,3 @@
-# tiki-test
+- Test: mvn test
+- Test and build file jar: mvn build
+- Run file jar: java -jar [path to file jar]

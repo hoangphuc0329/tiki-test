@@ -4,6 +4,7 @@
 - Run file jar: java -jar [path to file jar]
 
 (2) Image: hoangphuc0329/tiki-test:main.1
+![tiki](https://user-images.githubusercontent.com/13900550/111077962-cfb59480-8525-11eb-96c5-71c2debda6fd.PNG)
 
 (3) GIthub Deployment Repo: https://github.com/hoangphuc0329/tiki-deployment.git
     If you want to expose the services via http://abc.xyz, use loadbalancer type with a DNS record "abc.xyz"

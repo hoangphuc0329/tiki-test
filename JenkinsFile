@@ -1,0 +1,182 @@
+pipeline {
+    agent none
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '7'))
+        timeout(time: 15, unit: 'MINUTES')
+        timestamps()
+		disableConcurrentBuilds()
+    }
+    parameters {
+		choice(name: 'RUN_BUILD_STAGE', choices: ['YES', 'NO'], description: 'IF YES the Build stage will run')
+					
+        string(
+            name: 'APP_GIT_REPO_URL',
+            defaultValue:"https://github.com/hoangphuc0329/tiki-test.git",
+            description: "Github repo")
+			
+		choice(name: 'BUILD_BY_TAG_OR_BRANCH', choices: ['BRANCH', 'TAG'], description: '')
+		
+        string(
+            name: 'APP_GIT_REPO_BRANCH',
+            defaultValue:"main",
+            description: "Dockerhub repo")
+			
+        string(
+            name: 'GIT_CRED_ID',
+            defaultValue:"tiki-github",
+            description: "Github credentials")
+			
+        string(
+            name: 'MAVEN_BUILD_COMMAND',
+            defaultValue:"clean install",
+            description: "Github credentials")
+
+        string(
+            name: 'JAR_FILE',
+            defaultValue:"target/demo-0.0.1-SNAPSHOT.jar",
+            description: "Specify build file path")
+			
+        string(
+            name: 'DOCKER_REGISTRY_ENDPOINT',
+            defaultValue:"https://index.docker.io/v1/",
+            description: "Dockerhub repo")
+			
+        string(
+            name: 'DOCKER_REGISTRY_CRED',
+            defaultValue:"dockerhub-tiki",
+            description: "Dockerhub repo cred id")
+			
+		choice(name: 'RUN_DEPLOY_STAGE', choices: ['YES', 'NO'], description: 'IF YES the Deploy stage will run')
+
+        string(
+            name: 'K8S_MANIFEST_GIT_REPO',
+            defaultValue:"https://github.com/hoangphuc0329/tiki-deployment.git",
+            description: "K8s manifest git repo")
+			
+		choice(name: 'K8S_MANIFEST_GIT_BRANCH', choices: ['develop', 'staging', 'production'], description: 'K8s manifest git branch')
+    }
+    environment {
+        BRANCH_NAME = "${BRANCH_NAME}"
+    }
+    stages {
+		stage('Checkout Source Code By Tag') {
+			agent {
+				label "master"
+			}
+			when {
+				allOf {
+					//environment name: 'RUN_BUILD_STAGE', value: 'YES'
+					environment name: 'BUILD_BY_TAG_OR_BRANCH', value: 'TAG' 
+				}
+			}	
+			steps {			
+				script {
+					checkout([$class: 'GitSCM', branches: [[name: '$APP_GIT_REPO_BRANCH']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: "GIT_CRED_ID", refspec: '+refs/tags/*:refs/remotes/origin/tags/*', url: '$APP_GIT_REPO_URL']]])
+					GIT_TAG = "${sh(returnStdout: true, script: "git describe --tags --abbrev=0").trim()}"
+					BUILD_VERSION="${GIT_TAG}"
+					currentBuild.displayName = "$BUILD_VERSION"
+				}
+			}
+		}
+		stage('Checkout Source Code By Branch') {
+			agent {
+				label "master"
+			}
+			when {
+				allOf {
+					//environment name: 'RUN_BUILD_STAGE', value: 'YES'
+					environment name: 'BUILD_BY_TAG_OR_BRANCH', value: 'BRANCH'
+				}
+			}				
+			steps {
+				script {
+					git branch: "$APP_GIT_REPO_BRANCH", credentialsId: "$GIT_CRED_ID", url: "$APP_GIT_REPO_URL"
+					BUILD_VERSION="$APP_GIT_REPO_BRANCH.$env.BUILD_NUMBER"
+					currentBuild.displayName = "$BUILD_VERSION"
+				}
+			}
+		}
+		stage('Build Compile java source and package jar file') {
+			// Run the maven build using docker
+			agent {
+				label 'master'
+			}
+			when { 
+				environment name: 'RUN_BUILD_STAGE', value: 'YES' 
+			}				
+			steps {
+				script {
+					withDockerContainer(args: "--name ${env.JOB_NAME.toLowerCase()}-${BUILD_DISPLAY_NAME} --mount type=bind,source=${env.WORKSPACE},target=/tmp --mount type=bind,source=/tmp/maven/maven-repo,target=/root ", image: 'maven:3.6.3-jdk-11') {
+						sh "mvn $MAVEN_BUILD_COMMAND"
+					}
+				}
+			}
+		}
+		stage('Build Docker Image and Push to Registry') {
+			// Run the maven build using docker
+			agent {
+				label "master"
+			}
+			when { 
+				environment name: 'RUN_BUILD_STAGE', value: 'YES' 
+			}
+			steps {
+				script {
+					withDockerRegistry(credentialsId: "${DOCKER_REGISTRY_CRED}", url: "${DOCKER_REGISTRY_ENDPOINT}") {
+						def dockerImage = docker.build ("hoangphuc0329/tiki-test:${BUILD_DISPLAY_NAME}","--build-arg JAR_FILE=${JAR_FILE} -f Dockerfile ." )
+						dockerImage.push ("${BUILD_DISPLAY_NAME}")
+						sh "docker rmi \$(docker images --filter=reference=\"hoangphuc0329/tiki-test:${BUILD_DISPLAY_NAME}\" -q) -f"
+					}
+				}	
+			}
+		}
+		
+		stage('Deploy Build') {
+			agent {
+				label "master"
+			}
+			when { 
+				environment name: 'RUN_DEPLOY_STAGE', value: 'YES' 
+			}				
+            steps {
+                script {
+				    checkout([$class: 'GitSCM', branches: [[name: '*/$K8S_MANIFEST_GIT_BRANCH']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'k8s_manifest_repo']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: "$GIT_CRED_ID", url: '$K8S_MANIFEST_GIT_REPO']]])
+					def K8S_MANIFEST_GIT_REPO_PROTOCOL = K8S_MANIFEST_GIT_REPO.split('://',2)[0]
+					def K8S_MANIFEST_GIT_REPO_IP = K8S_MANIFEST_GIT_REPO.split('://',2)[1]
+                    def data = readYaml file:"${WORKSPACE}/k8s_manifest_repo/k8s_manifest/k8s-deployment.yaml"
+					data.spec.template.spec.containers[0].image = "hoangphuc0329/tiki-test:${BUILD_DISPLAY_NAME}"
+			        sh "rm ${WORKSPACE}/k8s_manifest_repo/k8s_manifest/k8s-deployment.yaml"
+                    writeYaml file:"${WORKSPACE}/k8s_manifest_repo/k8s_manifest/k8s-deployment.yaml", data: data
+					withCredentials([usernamePassword(credentialsId: "$GIT_CRED_ID", passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+						def encodedPassword = URLEncoder.encode("$GIT_PASSWORD",'UTF-8')
+						sh """
+							cd ${WORKSPACE}/k8s_manifest_repo
+							git add .
+							git commit -a -m "Update Image Into hoangphuc0329/tiki-test:${BUILD_DISPLAY_NAME}"
+							git push $K8S_MANIFEST_GIT_REPO_PROTOCOL://${GIT_USERNAME}:${encodedPassword}@$K8S_MANIFEST_GIT_REPO_IP HEAD:$K8S_MANIFEST_GIT_BRANCH
+						"""
+					}	
+                }
+			}	
+		}			
+    }
+    post {
+        always {
+            echo 'One way or another, I have finished'
+        }
+		cleanup {
+			node('master'){
+				deleteDir()
+				dir("${workspace}@tmp") {
+					deleteDir()
+				}
+				dir("${workspace}@script") {
+					deleteDir()
+				}
+				dir("${workspace}@libs") {
+					deleteDir()
+				}					
+			}
+		}	
+    }
+}

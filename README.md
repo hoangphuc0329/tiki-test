@@ -12,6 +12,9 @@
     
 # (4) Use JenkinsFile in this repository to create CI/CD Pipeline
     To delivery separated in various environment, we will create multiple branches for each environment in this repository and use argoCD to manage those k8s manifest on each branchs
+    - As for development, we will continuously trigger by merger event from developer to a branch in this repository and deploy it on development envinronment.
+    - As for staging or UAT we will continuously trigger the build by tagging a version from a set of cherry-pick commit and deploy this tag version onst staging envinronment.
+    - As for production, we will deploy a specific tag version which been deployed from staging or UAT to deploy to Production envinronment.
     
 ## CI/CD Architecture
 ![Tiki](https://user-images.githubusercontent.com/13900550/111078419-e0670a00-8527-11eb-87de-b2016eb3268b.png)
